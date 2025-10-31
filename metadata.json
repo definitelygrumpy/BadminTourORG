@@ -1,0 +1,5 @@
+{
+  "name": "BadminTour",
+  "description": "An application for badminton clubs to manage players, create internal tournaments with round-robin matches, track scores, view leaderboards, and maintain a history of past tournaments.",
+  "requestFramePermissions": []
+}

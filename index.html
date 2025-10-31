@@ -1,0 +1,49 @@
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Badminton Tournament Manager</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              primary: '#10B981', // Emerald 500
+              'primary-focus': '#059669', // Emerald 600
+              'primary-content': '#ffffff',
+              secondary: '#374151', // Gray 700
+              'secondary-focus': '#1F2937', // Gray 800
+              accent: '#3B82F6', // Blue 500,
+              neutral: '#111827', // Gray 900
+              'base-100': '#1F2937', // Gray 800
+              'base-200': '#374151', // Gray 700
+              'base-300': '#4B5563', // Gray 600
+              info: '#0EA5E9', // Sky 500
+              success: '#22C55E', // Green 500
+              warning: '#F59E0B', // Amber 500
+              error: '#EF4444', // Red 500
+            },
+          },
+        },
+      }
+    </script>
+  <script type="importmap">
+{
+  "imports": {
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "firebase/": "https://aistudiocdn.com/firebase@^12.5.0/"
+  }
+}
+</script>
+</head>
+  <body class="bg-base-100 text-gray-200">
+    <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>
