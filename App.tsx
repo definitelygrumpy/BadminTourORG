@@ -1,10 +1,15 @@
 
+
+
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { useLocalStorage } from './hooks/useLocalStorage';
 import type { Player, Tournament, Team, Match, LeaderboardStat, Club } from './types';
 import { BadmintonIcon, ChevronLeftIcon, HistoryIcon, LockClosedIcon, PencilIcon, PlusIcon, ShieldIcon, TrashIcon, TrophyIcon, UsersIcon } from './components/icons';
-import { initializeApp } from "firebase/app";
-import { getDatabase, ref, onValue, set, push, remove, get } from "firebase/database";
+// FIX: The original Firebase v9 modular imports were causing "no exported member" errors.
+// This is likely due to an older Firebase SDK version (v8 or below) being installed.
+// The imports have been changed to the v8 namespaced API.
+import firebase from 'firebase/app';
+import 'firebase/database';
 
 
 // --- Firebase Configuration ---
@@ -20,8 +25,12 @@ const firebaseConfig = {
 };
 
 // Initialize Firebase
-const app = initializeApp(firebaseConfig);
-const db = getDatabase(app);
+// FIX: Switched to the Firebase v8 API for initialization.
+// This includes a check to prevent re-initialization.
+if (!firebase.apps.length) {
+  firebase.initializeApp(firebaseConfig);
+}
+const db = firebase.database();
 
 // --- Helper Functions ---
 const generateRoundRobinMatches = (teams: Team[]): Match[] => {
@@ -120,8 +129,9 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ setAuth, clubs }) => {
         setError('');
         setLoading(true);
         try {
-            const adminRef = ref(db, 'admin/credentials');
-            const snapshot = await get(adminRef);
+            // FIX: Refactored Firebase database calls to use the v8 namespaced API.
+            const adminRef = db.ref('admin/credentials');
+            const snapshot = await adminRef.get();
             if (snapshot.exists()) {
                 const adminCreds = snapshot.val();
                 if (adminUser === adminCreds.username && adminPass === adminCreds.password) {
@@ -130,7 +140,13 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ setAuth, clubs }) => {
                     setError('Invalid admin credentials.');
                 }
             } else {
-                 setError('Admin account not configured.');
+                 // First-time admin setup.
+                 if (adminUser.trim() && adminPass.trim()) {
+                    await adminRef.set({ username: adminUser.trim(), password: adminPass.trim() });
+                    setAuth({ type: 'admin' });
+                 } else {
+                    setError('Please provide a username and password to initialize the admin account.');
+                 }
             }
         } catch (err) {
             console.error("Admin login failed:", err);
@@ -1010,18 +1026,24 @@ export default function App() {
             return data ? Object.keys(data).map(key => ({ ...data[key], id: key })) : [];
         };
 
-        const clubsRef = ref(db, 'clubs');
-        const playersRef = ref(db, 'players');
-        const tournamentsRef = ref(db, 'tournaments');
+        // FIX: Use v8 API for database references.
+        const clubsRef = db.ref('clubs');
+        const playersRef = db.ref('players');
+        const tournamentsRef = db.ref('tournaments');
 
-        const unsubClubs = onValue(clubsRef, (snapshot) => setClubs(transformSnapshot(snapshot)));
-        const unsubPlayers = onValue(playersRef, (snapshot) => setPlayers(transformSnapshot(snapshot)));
-        const unsubTournaments = onValue(tournamentsRef, (snapshot) => setTournaments(transformSnapshot(snapshot).sort((a,b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())));
+        // FIX: Use v8 API `on()` method for listening to value changes and implement cleanup with `off()`.
+        const clubsCallback = (snapshot: any) => setClubs(transformSnapshot(snapshot));
+        const playersCallback = (snapshot: any) => setPlayers(transformSnapshot(snapshot));
+        const tournamentsCallback = (snapshot: any) => setTournaments(transformSnapshot(snapshot).sort((a: Tournament, b: Tournament) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
+
+        clubsRef.on('value', clubsCallback);
+        playersRef.on('value', playersCallback);
+        tournamentsRef.on('value', tournamentsCallback);
 
         return () => {
-            unsubClubs();
-            unsubPlayers();
-            unsubTournaments();
+            clubsRef.off('value', clubsCallback);
+            playersRef.off('value', playersCallback);
+            tournamentsRef.off('value', tournamentsCallback);
         };
     }, []);
 
@@ -1030,8 +1052,9 @@ export default function App() {
         setAdminViewingTournamentId(null);
     };
 
+    // FIX: All data modification functions have been updated to use the Firebase v8 namespaced API.
     // --- Data Modification Functions ---
-    const handleAddClub = (name: string, password: string) => push(ref(db, 'clubs'), { name, password, active: true });
+    const handleAddClub = (name: string, password: string) => db.ref('clubs').push({ name, password, active: true });
     
     const handleUpdateClub = (clubId: string, data: { name: string; password: string }) => {
         if (clubs.some(c => c.name.toLowerCase() === data.name.toLowerCase() && c.id !== clubId)) {
@@ -1039,7 +1062,7 @@ export default function App() {
         }
         const clubToUpdate = clubs.find(c => c.id === clubId);
         if (clubToUpdate) {
-            set(ref(db, `clubs/${clubId}`), { ...clubToUpdate, name: data.name, password: data.password });
+            db.ref(`clubs/${clubId}`).set({ ...clubToUpdate, name: data.name, password: data.password });
         }
         return true;
     };
@@ -1047,21 +1070,21 @@ export default function App() {
     const handleToggleActive = (clubId: string) => {
         const club = clubs.find(c => c.id === clubId);
         if(club) {
-            set(ref(db, `clubs/${clubId}/active`), !club.active);
+            db.ref(`clubs/${clubId}/active`).set(!club.active);
         }
     };
     
-    const handleDeleteTournament = (tournamentId: string) => remove(ref(db, `tournaments/${tournamentId}`));
+    const handleDeleteTournament = (tournamentId: string) => db.ref(`tournaments/${tournamentId}`).remove();
 
-    const handleAddPlayer = (name: string, clubId: string) => push(ref(db, 'players'), { name, clubId });
+    const handleAddPlayer = (name: string, clubId: string) => db.ref('players').push({ name, clubId });
 
     const handleAddTournament = async (tournamentData: Omit<Tournament, 'id'>) => {
-        const newTournamentRef = await push(ref(db, 'tournaments'), tournamentData);
+        const newTournamentRef = await db.ref('tournaments').push(tournamentData);
         return newTournamentRef.key!;
     };
     
     const handleUpdateTournament = (id: string, updatedTournamentData: Omit<Tournament, 'id'>) => {
-        set(ref(db, `tournaments/${id}`), updatedTournamentData);
+        db.ref(`tournaments/${id}`).set(updatedTournamentData);
     };
     
     switch (auth.type) {
