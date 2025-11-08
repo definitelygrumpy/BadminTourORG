@@ -4,7 +4,7 @@ import { useLocalStorage } from './hooks/useLocalStorage';
 import type { Player, Tournament, Team, Match, LeaderboardStat, Club } from './types';
 import { BadmintonIcon, ChevronLeftIcon, HistoryIcon, LockClosedIcon, PencilIcon, PlusIcon, ShieldIcon, TrashIcon, TrophyIcon, UsersIcon } from './components/icons';
 import { initializeApp } from "firebase/app";
-import { getDatabase, ref, onValue, set, push, remove } from "firebase/database";
+import { getDatabase, ref, onValue, set, push, remove, get } from "firebase/database";
 
 
 // --- Firebase Configuration ---
@@ -41,6 +41,48 @@ const generateRoundRobinMatches = (teams: Team[]): Match[] => {
     return matches;
 };
 
+const calculateLeaderboardStats = (teams: Team[], matches: Match[]): LeaderboardStat[] => {
+    if (!teams || !matches) return [];
+    const teamStatsMap = new Map<string, Omit<LeaderboardStat, 'pointsDifference'>>();
+
+    teams.forEach(team => {
+        teamStatsMap.set(team.id, {
+            team: team, played: 0, wins: 0, losses: 0, points: 0,
+            pointsFor: 0, pointsAgainst: 0,
+        });
+    });
+
+    matches.forEach(match => {
+        if (match.status === 'COMPLETED') {
+            const statA = teamStatsMap.get(match.teamA.id);
+            const statB = teamStatsMap.get(match.teamB.id);
+            if (!statA || !statB) return;
+
+            statA.played++;
+            statB.played++;
+            statA.pointsFor += match.scoreA;
+            statA.pointsAgainst += match.scoreB;
+            statB.pointsFor += match.scoreB;
+            statB.pointsAgainst += match.scoreA;
+
+            if (match.winnerId === match.teamA.id) {
+                statA.wins++;
+                statA.points += 2;
+                statB.losses++;
+            } else if (match.winnerId === match.teamB.id) {
+                statB.wins++;
+                statB.points += 2;
+                statA.losses++;
+            }
+        }
+    });
+
+    return Array.from(teamStatsMap.values())
+        .map(s => ({ ...s, pointsDifference: s.pointsFor - s.pointsAgainst }))
+        .sort((a, b) => b.points - a.points || b.pointsDifference - a.pointsDifference);
+};
+
+
 // --- Auth & Admin Components ---
 type AuthState = { type: 'none' } | { type: 'club', clubId: string } | { type: 'admin' };
 
@@ -56,6 +98,7 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ setAuth, clubs }) => {
     const [adminUser, setAdminUser] = useState('');
     const [adminPass, setAdminPass] = useState('');
     const [error, setError] = useState('');
+    const [loading, setLoading] = useState(false);
 
     const handleClubLogin = (e: React.FormEvent) => {
         e.preventDefault();
@@ -66,19 +109,34 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ setAuth, clubs }) => {
                 setError('This club account is inactive. Please contact the administrator.');
                 return;
             }
-            setAuth({ type: 'club', clubId: foundClub.name });
+            setAuth({ type: 'club', clubId: foundClub.id });
         } else {
             setError('Invalid club name or password.');
         }
     };
 
-    const handleAdminLogin = (e: React.FormEvent) => {
+    const handleAdminLogin = async (e: React.FormEvent) => {
         e.preventDefault();
         setError('');
-        if (adminUser === 'ADMIN' && adminPass === 'ADMIN6767') {
-            setAuth({ type: 'admin' });
-        } else {
-            setError('Invalid admin credentials.');
+        setLoading(true);
+        try {
+            const adminRef = ref(db, 'admin/credentials');
+            const snapshot = await get(adminRef);
+            if (snapshot.exists()) {
+                const adminCreds = snapshot.val();
+                if (adminUser === adminCreds.username && adminPass === adminCreds.password) {
+                    setAuth({ type: 'admin' });
+                } else {
+                    setError('Invalid admin credentials.');
+                }
+            } else {
+                 setError('Admin account not configured.');
+            }
+        } catch (err) {
+            console.error("Admin login failed:", err);
+            setError('An error occurred during login.');
+        } finally {
+            setLoading(false);
         }
     };
 
@@ -96,13 +154,15 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ setAuth, clubs }) => {
                         <form onSubmit={handleClubLogin}>
                             <input type="text" value={clubName} onChange={e => setClubName(e.target.value)} placeholder="Club Name" className="w-full bg-base-200 text-white p-3 rounded-md border-2 border-base-300 focus:border-primary focus:outline-none transition mb-4" />
                             <input type="password" value={clubPassword} onChange={e => setClubPassword(e.target.value)} placeholder="Password" className="w-full bg-base-200 text-white p-3 rounded-md border-2 border-base-300 focus:border-primary focus:outline-none transition mb-4" />
-                            <button type="submit" className="w-full bg-primary text-primary-content font-bold py-3 px-4 rounded-md hover:bg-primary-focus transition-colors">Login</button>
+                            <button type="submit" disabled={loading} className="w-full bg-primary text-primary-content font-bold py-3 px-4 rounded-md hover:bg-primary-focus transition-colors disabled:bg-gray-500">Login</button>
                         </form>
                     ) : (
                         <form onSubmit={handleAdminLogin}>
                             <input type="text" value={adminUser} onChange={e => setAdminUser(e.target.value)} placeholder="Username" className="w-full bg-base-200 text-white p-3 rounded-md border-2 border-base-300 focus:border-primary focus:outline-none transition mb-4" />
                             <input type="password" value={adminPass} onChange={e => setAdminPass(e.target.value)} placeholder="Password" className="w-full bg-base-200 text-white p-3 rounded-md border-2 border-base-300 focus:border-primary focus:outline-none transition mb-4" />
-                            <button type="submit" className="w-full bg-accent text-white font-bold py-3 px-4 rounded-md hover:bg-blue-600 transition-colors">Admin Login</button>
+                            <button type="submit" disabled={loading} className="w-full bg-accent text-white font-bold py-3 px-4 rounded-md hover:bg-blue-600 transition-colors disabled:bg-gray-500">
+                                {loading ? 'Logging in...' : 'Admin Login'}
+                            </button>
                         </form>
                     )}
                     {error && <p className="text-error text-center mt-4">{error}</p>}
@@ -202,8 +262,8 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ clubs, tournaments, onA
         }
     };
     
-    const handleDeleteTournament = (tournamentId: string) => {
-        if (window.confirm('Are you sure you want to delete this tournament permanently?')) {
+    const handleDeleteTournament = (tournamentId: string, tournamentName: string) => {
+        if (window.confirm(`Are you sure you want to delete the tournament "${tournamentName}" permanently? This action cannot be undone.`)) {
             onDeleteTournament(tournamentId);
         }
     };
@@ -252,7 +312,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ clubs, tournaments, onA
                             <div key={t.id} className="bg-base-300 p-3 rounded flex justify-between items-center">
                                 <div>
                                     <p className="font-semibold">{t.name}</p>
-                                    <p className="text-sm text-gray-400">{t.clubId} - {new Date(t.createdAt).toLocaleDateString()}</p>
+                                    <p className="text-sm text-gray-400">{clubs.find(c => c.id === t.clubId)?.name ?? 'Unknown Club'} - {new Date(t.createdAt).toLocaleDateString()}</p>
                                 </div>
                                 <div className="flex items-center gap-2">
                                     <button 
@@ -262,7 +322,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ clubs, tournaments, onA
                                         View
                                     </button>
                                     <button 
-                                        onClick={() => handleDeleteTournament(t.id)} 
+                                        onClick={() => handleDeleteTournament(t.id, t.name)} 
                                         className="text-error p-2 rounded-md hover:bg-red-900/50 transition-colors"
                                         aria-label={`Delete tournament ${t.name}`}
                                     >
@@ -507,48 +567,7 @@ interface LeaderboardProps {
     matches: Match[];
 }
 const Leaderboard: React.FC<LeaderboardProps> = ({ teams, matches }) => {
-    const stats = useMemo<LeaderboardStat[]>(() => {
-        if (!teams || !matches) return [];
-        const teamStats: { [key: string]: Omit<LeaderboardStat, 'pointsDifference'> } = {};
-        teams.forEach(team => {
-            teamStats[team.id] = {
-                team: team,
-                played: 0,
-                wins: 0,
-                losses: 0,
-                points: 0,
-                pointsFor: 0,
-                pointsAgainst: 0,
-            };
-        });
-
-        matches.forEach(match => {
-            if (match.status === 'COMPLETED') {
-                const statA = teamStats[match.teamA.id];
-                const statB = teamStats[match.teamB.id];
-                if (!statA || !statB) return; // a team might have been deleted but still in a match
-                statA.played++;
-                statB.played++;
-                statA.pointsFor += match.scoreA;
-                statA.pointsAgainst += match.scoreB;
-                statB.pointsFor += match.scoreB;
-                statB.pointsAgainst += match.scoreA;
-                if (match.winnerId === match.teamA.id) {
-                    statA.wins++;
-                    statA.points += 2;
-                    statB.losses++;
-                } else {
-                    statB.wins++;
-                    statB.points += 2;
-                    statA.losses++;
-                }
-            }
-        });
-
-        return Object.values(teamStats)
-            .map(s => ({ ...s, pointsDifference: s.pointsFor - s.pointsAgainst }))
-            .sort((a, b) => b.points - a.points || b.pointsDifference - a.pointsDifference);
-    }, [teams, matches]);
+    const stats = useMemo<LeaderboardStat[]>(() => calculateLeaderboardStats(teams, matches), [teams, matches]);
 
     return (
         <div className="bg-base-200 p-4 rounded-lg">
@@ -591,12 +610,21 @@ interface TournamentViewProps {
     readOnly?: boolean;
 }
 const TournamentView: React.FC<TournamentViewProps> = ({ tournament, onUpdateTournament, readOnly = false }) => {
+    // Guard against malformed or older tournament data structures
+    const safeTournament = useMemo(() => ({
+        ...tournament,
+        players: tournament.players ?? [],
+        teams: tournament.teams ?? [],
+        matches: tournament.matches ?? [],
+    }), [tournament]);
+
     const [editingMatch, setEditingMatch] = useState<Match | null>(null);
     const [scoreA, setScoreA] = useState(0);
     const [scoreB, setScoreB] = useState(0);
+    const [scoreError, setScoreError] = useState('');
 
     const updateTournament = (updatedData: Partial<Omit<Tournament, 'id'>>) => {
-        const { id, ...currentTournamentData } = tournament;
+        const { id, ...currentTournamentData } = safeTournament;
         onUpdateTournament(id, { ...currentTournamentData, ...updatedData });
     };
 
@@ -604,21 +632,59 @@ const TournamentView: React.FC<TournamentViewProps> = ({ tournament, onUpdateTou
         setEditingMatch(match);
         setScoreA(match.scoreA);
         setScoreB(match.scoreB);
+        setScoreError('');
     };
+    
+    const validateScore = (sA: number, sB: number): boolean => {
+        if (sA < 0 || sB < 0) {
+            setScoreError('Scores cannot be negative.');
+            return false;
+        }
+        if (sA === sB) {
+            setScoreError('A match cannot end in a tie.');
+            return false;
+        }
+
+        const winnerScore = Math.max(sA, sB);
+        const loserScore = Math.min(sA, sB);
+
+        if (winnerScore > 30 || loserScore > 29) {
+            setScoreError('Invalid score. Maximum score is 30.');
+            return false;
+        }
+
+        if (winnerScore < 21) {
+             setScoreError('Winning score must be at least 21.');
+             return false;
+        }
+        
+        if (winnerScore < 30 && (winnerScore - loserScore < 2)) {
+            setScoreError('Winner must win by at least 2 points.');
+            return false;
+        }
+
+        if (winnerScore === 30 && loserScore !== 29) {
+             setScoreError('If a score is 30, the other must be 29.');
+             return false;
+        }
+        
+        setScoreError('');
+        return true;
+    }
 
     const handleSaveScore = () => {
-        if (!editingMatch) return;
+        if (!editingMatch || !validateScore(scoreA, scoreB)) return;
         
         const winnerId = scoreA > scoreB ? editingMatch.teamA.id : editingMatch.teamB.id;
         
         const updatedMatch: Match = { ...editingMatch, scoreA, scoreB, status: 'COMPLETED', winnerId };
 
-        const updatedMatches = tournament.matches.map(m => m.id === updatedMatch.id ? updatedMatch : m);
+        const updatedMatches = safeTournament.matches.map(m => m.id === updatedMatch.id ? updatedMatch : m);
         
         const partialUpdate: Partial<Omit<Tournament, 'id'>> = { matches: updatedMatches };
         
-        if (updatedMatches.every(m => m.status === 'COMPLETED') && !tournament.finalMatch) {
-            const standings = calculateStandings(tournament.teams, updatedMatches);
+        if (updatedMatches.every(m => m.status === 'COMPLETED') && !safeTournament.finalMatch) {
+            const standings = calculateLeaderboardStats(safeTournament.teams, updatedMatches);
             if (standings.length >= 2) {
                 const finalMatch: Match = {
                     id: crypto.randomUUID(),
@@ -637,59 +703,24 @@ const TournamentView: React.FC<TournamentViewProps> = ({ tournament, onUpdateTou
     };
 
     const handleFinalScoreSave = (finalScoreA: number, finalScoreB: number) => {
-        if (!tournament.finalMatch) return;
-        const winner = finalScoreA > finalScoreB ? tournament.finalMatch.teamA : tournament.finalMatch.teamB;
-        const runnerUp = finalScoreA > finalScoreB ? tournament.finalMatch.teamB : tournament.finalMatch.teamA;
+        if (!safeTournament.finalMatch || !validateScore(finalScoreA, finalScoreB)) return;
+        const isAWinner = finalScoreA > finalScoreB;
+        const winner = isAWinner ? safeTournament.finalMatch.teamA : safeTournament.finalMatch.teamB;
+        const runnerUp = isAWinner ? safeTournament.finalMatch.teamB : safeTournament.finalMatch.teamA;
 
-        const updatedFinalMatch: Match = {...tournament.finalMatch, scoreA: finalScoreA, scoreB: finalScoreB, status: 'COMPLETED', winnerId: winner.id };
+        const updatedFinalMatch: Match = {...safeTournament.finalMatch, scoreA: finalScoreA, scoreB: finalScoreB, status: 'COMPLETED', winnerId: winner.id };
 
         updateTournament({finalMatch: updatedFinalMatch, winnerId: winner.id, runnerUpId: runnerUp.id, status: 'COMPLETED'});
     };
     
-    const calculateStandings = (teams: Team[], matches: Match[]): LeaderboardStat[] => {
-         const stats = teams.map(team => ({
-            team: team,
-            played: 0, wins: 0, losses: 0, points: 0,
-            pointsFor: 0, pointsAgainst: 0, pointsDifference: 0,
-        }));
-        const teamStats = new Map(stats.map(s => [s.team.id, s]));
-
-        matches.filter(m => m.status === 'COMPLETED').forEach(match => {
-            const statA = teamStats.get(match.teamA.id)!;
-            const statB = teamStats.get(match.teamB.id)!;
-            if(!statA || !statB) return;
-            
-            statA.played++;
-            statB.played++;
-            statA.pointsFor += match.scoreA;
-            statA.pointsAgainst += match.scoreB;
-            statB.pointsFor += match.scoreB;
-            statB.pointsAgainst += match.scoreA;
-
-            if (match.winnerId === match.teamA.id) {
-                statA.wins++;
-                statA.points += 2;
-                statB.losses++;
-            } else {
-                statB.wins++;
-                statB.points += 2;
-                statA.losses++;
-            }
-        });
-
-        return Array.from(teamStats.values())
-             .map(s => ({ ...s, pointsDifference: s.pointsFor - s.pointsAgainst }))
-             .sort((a, b) => b.points - a.points || b.pointsDifference - a.pointsDifference);
-    };
-
-    const isRoundRobinComplete = tournament.matches.every(m => m.status === 'COMPLETED');
-    const winner = tournament.winnerId ? tournament.teams.find(t => t.id === tournament.winnerId) : null;
-    const runnerUp = tournament.runnerUpId ? tournament.teams.find(t => t.id === tournament.runnerUpId) : null;
+    const isRoundRobinComplete = safeTournament.matches.every(m => m.status === 'COMPLETED');
+    const winner = safeTournament.winnerId ? safeTournament.teams.find(t => t.id === safeTournament.winnerId) : null;
+    const runnerUp = safeTournament.runnerUpId ? safeTournament.teams.find(t => t.id === safeTournament.runnerUpId) : null;
     
     return (
         <div className="p-4 md:p-6">
-            <h2 className="text-3xl font-bold text-white mb-6 truncate">{tournament.name}</h2>
-            {tournament.status === 'COMPLETED' && winner && runnerUp && (
+            <h2 className="text-3xl font-bold text-white mb-6 truncate">{safeTournament.name}</h2>
+            {safeTournament.status === 'COMPLETED' && winner && runnerUp && (
                 <div className="bg-yellow-500/20 border border-yellow-500 text-yellow-300 p-6 rounded-lg mb-6 text-center shadow-lg">
                     <TrophyIcon className="w-16 h-16 mx-auto text-yellow-400 mb-4"/>
                     <h3 className="text-2xl font-bold text-white">Tournament Complete!</h3>
@@ -699,16 +730,16 @@ const TournamentView: React.FC<TournamentViewProps> = ({ tournament, onUpdateTou
             )}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div className="lg:col-span-2 space-y-6">
-                     {isRoundRobinComplete && tournament.finalMatch && (
+                     {isRoundRobinComplete && safeTournament.finalMatch && (
                         <div className="bg-base-200 p-4 rounded-lg">
                             <h3 className="text-xl font-semibold mb-4 text-primary">Final Match</h3>
-                            <FinalMatchCard match={tournament.finalMatch} onSave={handleFinalScoreSave} readOnly={readOnly || tournament.status === 'COMPLETED'}/>
+                            <FinalMatchCard match={safeTournament.finalMatch} onSave={handleFinalScoreSave} readOnly={readOnly || safeTournament.status === 'COMPLETED'} validateScore={validateScore}/>
                         </div>
                      )}
                      <div className="bg-base-200 p-4 rounded-lg">
                         <h3 className="text-xl font-semibold mb-4">Matches</h3>
                         <div className="space-y-3">
-                            {tournament.matches.map(match => (
+                            {safeTournament.matches.map(match => (
                                 <div key={match.id} className="bg-base-300 p-3 rounded-md flex items-center justify-between">
                                     <div className="text-sm sm:text-base">
                                         <span>{match.teamA.name}</span>
@@ -718,7 +749,7 @@ const TournamentView: React.FC<TournamentViewProps> = ({ tournament, onUpdateTou
                                     {match.status === 'COMPLETED' ? (
                                         <div className="flex items-center gap-2">
                                             <span className="font-bold text-lg">{match.scoreA} - {match.scoreB}</span>
-                                            {!readOnly && tournament.status !== 'COMPLETED' &&
+                                            {!readOnly && safeTournament.status !== 'COMPLETED' &&
                                             <button onClick={() => handleEditScore(match)} className="text-xs bg-secondary px-2 py-1 rounded">Edit</button>}
                                         </div>
                                     ) : (
@@ -730,7 +761,7 @@ const TournamentView: React.FC<TournamentViewProps> = ({ tournament, onUpdateTou
                     </div>
                 </div>
                 <div className="lg:col-span-1">
-                    <Leaderboard teams={tournament.teams} matches={tournament.matches} />
+                    <Leaderboard teams={safeTournament.teams} matches={safeTournament.matches} />
                 </div>
             </div>
 
@@ -741,13 +772,14 @@ const TournamentView: React.FC<TournamentViewProps> = ({ tournament, onUpdateTou
                          <div className="space-y-4">
                              <div className="flex items-center justify-between">
                                  <label className="text-gray-300 w-2/3">{editingMatch.teamA.name}</label>
-                                 <input type="number" value={scoreA} onChange={e => setScoreA(parseInt(e.target.value))} className="w-1/3 bg-base-300 text-white p-2 rounded-md text-center" />
+                                 <input type="number" value={scoreA} onChange={e => setScoreA(parseInt(e.target.value) || 0)} className="w-1/3 bg-base-300 text-white p-2 rounded-md text-center" />
                              </div>
                              <div className="flex items-center justify-between">
                                  <label className="text-gray-300 w-2/3">{editingMatch.teamB.name}</label>
-                                 <input type="number" value={scoreB} onChange={e => setScoreB(parseInt(e.target.value))} className="w-1/3 bg-base-300 text-white p-2 rounded-md text-center" />
+                                 <input type="number" value={scoreB} onChange={e => setScoreB(parseInt(e.target.value) || 0)} className="w-1/3 bg-base-300 text-white p-2 rounded-md text-center" />
                              </div>
                          </div>
+                         {scoreError && <p className="text-error text-center mt-4 text-sm">{scoreError}</p>}
                          <div className="flex justify-end gap-3 mt-6">
                             <button onClick={() => setEditingMatch(null)} className="bg-secondary text-white font-bold py-2 px-4 rounded-md hover:bg-secondary-focus transition-colors">Cancel</button>
                             <button onClick={handleSaveScore} className="bg-primary text-primary-content font-bold py-2 px-4 rounded-md hover:bg-primary-focus transition-colors">Save</button>
@@ -763,15 +795,34 @@ interface FinalMatchCardProps {
     match: Match;
     onSave: (scoreA: number, scoreB: number) => void;
     readOnly: boolean;
+    validateScore: (sA: number, sB: number) => boolean;
 }
-const FinalMatchCard: React.FC<FinalMatchCardProps> = ({ match, onSave, readOnly }) => {
+const FinalMatchCard: React.FC<FinalMatchCardProps> = ({ match, onSave, readOnly, validateScore }) => {
     const [scoreA, setScoreA] = useState(match.scoreA);
     const [scoreB, setScoreB] = useState(match.scoreB);
     const [isEditing, setIsEditing] = useState(false);
+    const [error, setError] = useState('');
+    
+    useEffect(() => {
+        setIsEditing(false);
+        setError('');
+        setScoreA(match.scoreA);
+        setScoreB(match.scoreB);
+    }, [match]);
 
     const handleSave = () => {
-        onSave(scoreA, scoreB);
-        setIsEditing(false);
+        if (validateScore(scoreA, scoreB)) {
+             onSave(scoreA, scoreB);
+             setIsEditing(false);
+             setError('');
+        } else {
+            // A bit of a hack to get the error message from the parent component's state
+            // In a real app, the validation logic would be shared more cleanly
+            setTimeout(() => {
+                const tempError = document.querySelector('.text-error')?.textContent;
+                if(tempError) setError(tempError);
+            }, 0);
+        }
     }
     
     if (readOnly || (match.status === 'COMPLETED' && !isEditing)) {
@@ -793,10 +844,11 @@ const FinalMatchCard: React.FC<FinalMatchCardProps> = ({ match, onSave, readOnly
                 <span className="w-2/5 text-left">{match.teamB.name}</span>
             </div>
              <div className="flex justify-between items-center gap-2">
-                <input type="number" value={scoreA} onChange={e => setScoreA(parseInt(e.target.value))} className="w-2/5 bg-base-100 text-white p-2 rounded-md text-center"/>
+                <input type="number" value={scoreA} onChange={e => setScoreA(parseInt(e.target.value) || 0)} className="w-2/5 bg-base-100 text-white p-2 rounded-md text-center"/>
                  <span className="w-1/5 text-center">-</span>
-                <input type="number" value={scoreB} onChange={e => setScoreB(parseInt(e.target.value))} className="w-2/5 bg-base-100 text-white p-2 rounded-md text-center"/>
+                <input type="number" value={scoreB} onChange={e => setScoreB(parseInt(e.target.value) || 0)} className="w-2/5 bg-base-100 text-white p-2 rounded-md text-center"/>
              </div>
+             {error && <p className="text-error text-center mt-2 text-sm">{error}</p>}
              <div className="text-right mt-3">
                  <button onClick={handleSave} className="bg-primary text-white font-semibold px-3 py-1 rounded-md text-sm">Save Final Score</button>
              </div>
@@ -837,7 +889,7 @@ const TournamentHistory: React.FC<TournamentHistoryProps> = ({ tournaments, onVi
 
 // --- Club Application Component ---
 interface ClubApplicationProps {
-    clubId: string;
+    club: Club;
     players: Player[];
     tournaments: Tournament[];
     onAddPlayer: (name: string, clubId: string) => void;
@@ -845,17 +897,17 @@ interface ClubApplicationProps {
     onUpdateTournament: (id: string, updatedTournamentData: Omit<Tournament, 'id'>) => void;
     onLogout: () => void;
 }
-const ClubApplication: React.FC<ClubApplicationProps> = ({ clubId, players, tournaments, onAddPlayer, onAddTournament, onUpdateTournament, onLogout }) => {
+const ClubApplication: React.FC<ClubApplicationProps> = ({ club, players, tournaments, onAddPlayer, onAddTournament, onUpdateTournament, onLogout }) => {
     const [view, setView] = useState<'dashboard' | 'players' | 'new_tournament' | 'history'>('dashboard');
     const [activeTournamentId, setActiveTournamentId] = useState<string | null>(null);
 
-    const clubPlayers = useMemo(() => players.filter(p => p.clubId === clubId), [players, clubId]);
-    const clubTournaments = useMemo(() => tournaments.filter(t => t.clubId === clubId), [tournaments, clubId]);
+    const clubPlayers = useMemo(() => players.filter(p => p.clubId === club.id), [players, club.id]);
+    const clubTournaments = useMemo(() => tournaments.filter(t => t.clubId === club.id), [tournaments, club.id]);
     
     useEffect(() => {
         setActiveTournamentId(null);
         setView('dashboard');
-    }, [clubId]);
+    }, [club.id]);
 
     const handleTournamentCreate = async (tournament: Omit<Tournament, 'id'>) => {
         const newId = await onAddTournament(tournament);
@@ -871,9 +923,9 @@ const ClubApplication: React.FC<ClubApplicationProps> = ({ clubId, players, tour
         
         switch (view) {
             case 'players':
-                return <PlayerManagement clubId={clubId} players={clubPlayers} onAddPlayer={onAddPlayer}/>;
+                return <PlayerManagement clubId={club.id} players={clubPlayers} onAddPlayer={onAddPlayer}/>;
             case 'new_tournament':
-                return <TournamentWizard clubId={clubId} players={clubPlayers} onTournamentCreate={handleTournamentCreate}/>;
+                return <TournamentWizard clubId={club.id} players={clubPlayers} onTournamentCreate={handleTournamentCreate}/>;
             case 'history':
                 return <TournamentHistory tournaments={clubTournaments} onViewTournament={setActiveTournamentId} />
             case 'dashboard':
@@ -922,7 +974,7 @@ const ClubApplication: React.FC<ClubApplicationProps> = ({ clubId, players, tour
             <header className="bg-base-200 shadow-md p-4 flex justify-between items-center">
                 <div className="flex items-center gap-4">
                     <BadmintonIcon className="w-8 h-8 text-primary"/>
-                    <h1 className="text-xl font-bold text-white hidden sm:block">{clubId}</h1>
+                    <h1 className="text-xl font-bold text-white hidden sm:block">{club.name}</h1>
                 </div>
                 <button onClick={onLogout} className="text-sm bg-secondary hover:bg-secondary-focus text-white font-semibold py-2 px-4 rounded-md transition-colors">
                     Logout
@@ -964,7 +1016,7 @@ export default function App() {
 
         const unsubClubs = onValue(clubsRef, (snapshot) => setClubs(transformSnapshot(snapshot)));
         const unsubPlayers = onValue(playersRef, (snapshot) => setPlayers(transformSnapshot(snapshot)));
-        const unsubTournaments = onValue(tournamentsRef, (snapshot) => setTournaments(transformSnapshot(snapshot)));
+        const unsubTournaments = onValue(tournamentsRef, (snapshot) => setTournaments(transformSnapshot(snapshot).sort((a,b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())));
 
         return () => {
             unsubClubs();
@@ -1051,8 +1103,18 @@ export default function App() {
                 onViewTournament={setAdminViewingTournamentId}
             />;
         case 'club':
+            const currentClub = auth.clubId ? clubs.find(c => c.id === auth.clubId) : null;
+            
+            // Auto-logout if club is deleted or deactivated
+            if (!currentClub || !currentClub.active) {
+                if (auth.clubId) { // only logout if there was a clubId
+                    handleLogout(); 
+                }
+                return <LoginScreen setAuth={setAuth} clubs={clubs} />;
+            }
+
             return <ClubApplication
-                clubId={auth.clubId}
+                club={currentClub}
                 players={players}
                 tournaments={tournaments}
                 onAddPlayer={handleAddPlayer}
