@@ -1,16 +1,10 @@
 
-
-
-
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { useLocalStorage } from './hooks/useLocalStorage';
 import type { Player, Tournament, Team, Match, LeaderboardStat, Club } from './types';
 import { BadmintonIcon, ChevronLeftIcon, HistoryIcon, LockClosedIcon, PencilIcon, PlusIcon, ShieldIcon, TrashIcon, TrophyIcon, UsersIcon } from './components/icons';
-// FIX: The original Firebase v9 modular imports were causing "no exported member" errors.
-// This is likely due to an older Firebase SDK version (v8 or below) being installed.
-// The imports have been changed to the v8 namespaced API.
-import firebase from 'firebase/app';
-import 'firebase/database';
+import firebase from 'firebase/compat/app';
+import 'firebase/compat/database';
 
 
 // --- Firebase Configuration ---
@@ -26,8 +20,6 @@ const firebaseConfig = {
 };
 
 // Initialize Firebase
-// FIX: Switched to the Firebase v8 API for initialization.
-// This includes a check to prevent re-initialization.
 if (!firebase.apps.length) {
   firebase.initializeApp(firebaseConfig);
 }
@@ -149,7 +141,6 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ setAuth, clubs }) => {
         setError('');
         setLoading(true);
         try {
-            // FIX: Refactored Firebase database calls to use the v8 namespaced API.
             const adminRef = db.ref('admin/credentials');
             const snapshot = await adminRef.get();
             if (snapshot.exists()) {
@@ -427,11 +418,11 @@ const PlayerManagement: React.FC<PlayerManagementProps> = ({ clubId, players, on
                 </button>
             </form>
             <div className="bg-base-200 p-4 rounded-lg">
-                <h3 className="text-xl font-semibold mb-4 border-b border-base-300 pb-2">Player List</h3>
+                <h3 className="text-xl font-semibold mb-4 border-b border-base-300 pb-2">Player List ({players.length})</h3>
                 {players.length === 0 ? (
                     <p className="text-gray-400 text-center py-4">No players added yet. Add some players to start a tournament.</p>
                 ) : (
-                    <ul className="space-y-2">
+                    <ul className="space-y-2 max-h-96 overflow-y-auto pr-2">
                         {players.map((player) => (
                             <li key={player.id} className="bg-base-300 p-3 rounded-md text-white">{player.name}</li>
                         ))}
@@ -520,14 +511,14 @@ const TournamentWizard: React.FC<TournamentWizardProps> = ({ clubId, players, on
 
     const isManualTeamSetupValid = useMemo(() => {
         const allSelectedPlayers = new Set<string>();
-        if (manualTeams.length !== selectedPlayerIds.size / 2) return false;
+        if (manualTeams.length !== Math.floor(selectedPlayerIds.size / 2)) return false;
         for (const team of manualTeams) {
             if (!team[0] || !team[1] || team[0] === team[1]) return false;
             if (allSelectedPlayers.has(team[0]) || allSelectedPlayers.has(team[1])) return false;
             allSelectedPlayers.add(team[0]);
             allSelectedPlayers.add(team[1]);
         }
-        return allSelectedPlayers.size === selectedPlayerIds.size;
+        return allSelectedPlayers.size === (manualTeams.length * 2);
     }, [manualTeams, selectedPlayerIds]);
 
     const renderStep = () => {
@@ -559,7 +550,7 @@ const TournamentWizard: React.FC<TournamentWizardProps> = ({ clubId, players, on
                                  </button>
                              ))}
                          </div>
-                         {selectedCount > 0 && selectedCount % 2 !== 0 && <p className="text-warning mt-2">Please select an even number of players.</p>}
+                         {selectedCount > 0 && selectedCount % 2 !== 0 && <p className="text-warning mt-2 text-center text-sm">Please select an even number of players.</p>}
                          <div className="flex justify-between mt-4">
                             <button onClick={() => setStep(1)} className="bg-secondary text-white font-bold py-2 px-4 rounded-md hover:bg-secondary-focus transition-colors">Back</button>
                             <button onClick={() => setStep(3)} disabled={selectedCount < 2 || selectedCount % 2 !== 0} className="bg-primary text-primary-content font-bold py-2 px-4 rounded-md hover:bg-primary-focus transition-colors disabled:bg-gray-500">Next</button>
@@ -651,9 +642,93 @@ const Leaderboard: React.FC<LeaderboardProps> = ({ teams, matches }) => {
     );
 };
 
+interface FinalMatchCardProps {
+    match: Match;
+    onSave: (scoreA: number, scoreB: number) => void;
+    readOnly: boolean;
+}
+
+const FinalMatchCard: React.FC<FinalMatchCardProps> = ({ match, onSave, readOnly }) => {
+    const [scoreA, setScoreA] = useState(match.scoreA);
+    const [scoreB, setScoreB] = useState(match.scoreB);
+    const [error, setError] = useState('');
+
+    const validateAndSave = () => {
+        const sA = Number(scoreA);
+        const sB = Number(scoreB);
+
+        if (sA < 0 || sB < 0) {
+            setError('Scores cannot be negative.');
+            return;
+        }
+        if (sA === sB) {
+            setError('A match cannot end in a tie.');
+            return;
+        }
+
+        const winnerScore = Math.max(sA, sB);
+        const loserScore = Math.min(sA, sB);
+
+        if (winnerScore > 30 || loserScore > 29) {
+            setError('Invalid score. Maximum score is 30.');
+            return;
+        }
+
+        if (winnerScore < 21) {
+            setError('Winning score must be at least 21.');
+            return;
+        }
+        
+        if (winnerScore < 30 && (winnerScore - loserScore < 2)) {
+            setError('Winner must win by at least 2 points.');
+            return;
+        }
+
+        if (winnerScore === 30 && loserScore !== 29) {
+            setError('If a score is 30, the other must be 29.');
+            return;
+        }
+        
+        setError('');
+        onSave(sA, sB);
+    };
+
+    if (readOnly || match.status === 'COMPLETED') {
+        return (
+            <div className="bg-base-300 p-3 rounded-md flex items-center justify-between">
+                <div className="text-sm sm:text-base">
+                    <span className="font-semibold">{match.teamA.name}</span>
+                    <span className="font-bold text-primary mx-2">vs</span>
+                    <span className="font-semibold">{match.teamB.name}</span>
+                </div>
+                <span className="font-bold text-lg">{match.scoreA} - {match.scoreB}</span>
+            </div>
+        );
+    }
+
+    return (
+        <div className="bg-base-300 p-4 rounded-md">
+            <div className="flex items-center justify-between mb-3 flex-wrap gap-y-2">
+                <span className="font-semibold w-full sm:w-auto text-center sm:text-left">{match.teamA.name}</span>
+                <span className="font-bold text-primary mx-2 hidden sm:inline">vs</span>
+                <span className="font-semibold w-full sm:w-auto text-center sm:text-right">{match.teamB.name}</span>
+            </div>
+            <div className="flex items-center justify-center gap-3 mt-2">
+                <input aria-label={`${match.teamA.name} score`} type="number" value={scoreA} onChange={e => setScoreA(Number(e.target.value))} className="w-24 bg-base-100 text-center p-2 rounded text-lg" />
+                <span className="text-xl font-bold">-</span>
+                <input aria-label={`${match.teamB.name} score`} type="number" value={scoreB} onChange={e => setScoreB(Number(e.target.value))} className="w-24 bg-base-100 text-center p-2 rounded text-lg" />
+            </div>
+            {error && <p className="text-error text-sm mt-2 text-center">{error}</p>}
+            <div className="mt-4 flex justify-end">
+                <button onClick={validateAndSave} className="bg-success text-white font-semibold px-4 py-2 rounded-md text-sm hover:bg-green-600 transition-colors">Save Final Score</button>
+            </div>
+        </div>
+    );
+};
+
 interface TournamentViewProps {
     tournament: Tournament;
-    onUpdateTournament: (id: string, updatedTournamentData: Omit<Tournament, 'id'>) => void;
+    onUpdateTournament: (id: string, updatedTournamentData: Partial<Omit<Tournament, 'id'>>) => void;
     readOnly?: boolean;
 }
 const TournamentView: React.FC<TournamentViewProps> = ({ tournament, onUpdateTournament, readOnly = false }) => {
@@ -671,8 +746,7 @@ const TournamentView: React.FC<TournamentViewProps> = ({ tournament, onUpdateTou
     const [scoreError, setScoreError] = useState('');
 
     const updateTournament = (updatedData: Partial<Omit<Tournament, 'id'>>) => {
-        const { id, ...currentTournamentData } = safeTournament;
-        onUpdateTournament(id, { ...currentTournamentData, ...updatedData });
+        onUpdateTournament(safeTournament.id, updatedData);
     };
 
     const handleEditScore = (match: Match) => {
@@ -750,7 +824,8 @@ const TournamentView: React.FC<TournamentViewProps> = ({ tournament, onUpdateTou
     };
 
     const handleFinalScoreSave = (finalScoreA: number, finalScoreB: number) => {
-        if (!safeTournament.finalMatch || !validateScore(finalScoreA, finalScoreB)) return;
+        if (!safeTournament.finalMatch || readOnly) return;
+
         const isAWinner = finalScoreA > finalScoreB;
         const winner = isAWinner ? safeTournament.finalMatch.teamA : safeTournament.finalMatch.teamB;
         const runnerUp = isAWinner ? safeTournament.finalMatch.teamB : safeTournament.finalMatch.teamA;
@@ -780,7 +855,7 @@ const TournamentView: React.FC<TournamentViewProps> = ({ tournament, onUpdateTou
                      {isRoundRobinComplete && safeTournament.finalMatch && (
                         <div className="bg-base-200 p-4 rounded-lg">
                             <h3 className="text-xl font-semibold mb-4 text-primary">Final Match</h3>
-                            <FinalMatchCard match={safeTournament.finalMatch} onSave={handleFinalScoreSave} readOnly={readOnly || safeTournament.status === 'COMPLETED'} validateScore={validateScore}/>
+                            <FinalMatchCard match={safeTournament.finalMatch} onSave={handleFinalScoreSave} readOnly={readOnly || safeTournament.status === 'COMPLETED'} />
                         </div>
                      )}
                      <div className="bg-base-200 p-4 rounded-lg">
@@ -814,370 +889,265 @@ const TournamentView: React.FC<TournamentViewProps> = ({ tournament, onUpdateTou
 
             {editingMatch && (
                  <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center p-4 z-50">
-                     <div className="bg-base-200 rounded-lg p-6 w-full max-w-md">
-                         <h3 className="text-xl font-semibold mb-4">Update Score</h3>
-                         <div className="space-y-4">
-                             <div className="flex items-center justify-between">
-                                 <label className="text-gray-300 w-2/3">{editingMatch.teamA.name}</label>
-                                 <input type="number" value={scoreA} onChange={e => setScoreA(parseInt(e.target.value) || 0)} className="w-1/3 bg-base-300 text-white p-2 rounded-md text-center" />
-                             </div>
-                             <div className="flex items-center justify-between">
-                                 <label className="text-gray-300 w-2/3">{editingMatch.teamB.name}</label>
-                                 <input type="number" value={scoreB} onChange={e => setScoreB(parseInt(e.target.value) || 0)} className="w-1/3 bg-base-300 text-white p-2 rounded-md text-center" />
-                             </div>
-                         </div>
-                         {scoreError && <p className="text-error text-center mt-4 text-sm">{scoreError}</p>}
-                         <div className="flex justify-end gap-3 mt-6">
+                    <div className="bg-base-200 rounded-lg p-6 w-full max-w-md">
+                        <h3 className="text-xl font-semibold mb-4">Enter Score</h3>
+                        <div className="flex justify-around items-center">
+                            <span className="font-semibold text-center">{editingMatch.teamA.name}</span>
+                            <span className="text-gray-400">vs</span>
+                            <span className="font-semibold text-center">{editingMatch.teamB.name}</span>
+                        </div>
+                        <div className="flex items-center justify-center gap-4 my-4">
+                            <input type="number" value={scoreA} onChange={e => setScoreA(Number(e.target.value))} className="w-24 bg-base-300 text-center p-2 rounded text-xl" />
+                            <span>-</span>
+                            <input type="number" value={scoreB} onChange={e => setScoreB(Number(e.target.value))} className="w-24 bg-base-300 text-center p-2 rounded text-xl" />
+                        </div>
+                        {scoreError && <p className="text-error text-center text-sm mb-4">{scoreError}</p>}
+                        <div className="flex justify-end gap-3">
                             <button onClick={() => setEditingMatch(null)} className="bg-secondary text-white font-bold py-2 px-4 rounded-md hover:bg-secondary-focus transition-colors">Cancel</button>
                             <button onClick={handleSaveScore} className="bg-primary text-primary-content font-bold py-2 px-4 rounded-md hover:bg-primary-focus transition-colors">Save</button>
-                         </div>
-                     </div>
-                 </div>
+                        </div>
+                    </div>
+                </div>
             )}
         </div>
     );
 };
 
-interface FinalMatchCardProps {
-    match: Match;
-    onSave: (scoreA: number, scoreB: number) => void;
-    readOnly: boolean;
-    validateScore: (sA: number, sB: number) => boolean;
-}
-const FinalMatchCard: React.FC<FinalMatchCardProps> = ({ match, onSave, readOnly, validateScore }) => {
-    const [scoreA, setScoreA] = useState(match.scoreA);
-    const [scoreB, setScoreB] = useState(match.scoreB);
-    const [isEditing, setIsEditing] = useState(false);
-    const [error, setError] = useState('');
-    
-    useEffect(() => {
-        setIsEditing(false);
-        setError('');
-        setScoreA(match.scoreA);
-        setScoreB(match.scoreB);
-    }, [match]);
 
-    const handleSave = () => {
-        if (validateScore(scoreA, scoreB)) {
-             onSave(scoreA, scoreB);
-             setIsEditing(false);
-             setError('');
-        } else {
-            // A bit of a hack to get the error message from the parent component's state
-            // In a real app, the validation logic would be shared more cleanly
-            setTimeout(() => {
-                const tempError = document.querySelector('.text-error')?.textContent;
-                if(tempError) setError(tempError);
-            }, 0);
-        }
-    }
-    
-    if (readOnly || (match.status === 'COMPLETED' && !isEditing)) {
-        return (
-             <div className="bg-base-300 p-4 rounded-md text-center">
-                 <p className="text-gray-400">{match.teamA.name}</p>
-                 <p className="text-3xl font-bold my-2">{match.scoreA} - {match.scoreB}</p>
-                 <p className="text-gray-400">{match.teamB.name}</p>
-                 {!readOnly && <button onClick={() => setIsEditing(true)} className="text-xs mt-2 bg-secondary px-2 py-1 rounded">Edit</button>}
-             </div>
-        );
-    }
-
-    return (
-        <div className="bg-base-300 p-4 rounded-md">
-            <div className="flex justify-between items-center mb-2">
-                <span className="w-2/5 text-right">{match.teamA.name}</span>
-                <span className="w-1/5 text-center font-bold text-primary">vs</span>
-                <span className="w-2/5 text-left">{match.teamB.name}</span>
-            </div>
-             <div className="flex justify-between items-center gap-2">
-                <input type="number" value={scoreA} onChange={e => setScoreA(parseInt(e.target.value) || 0)} className="w-2/5 bg-base-100 text-white p-2 rounded-md text-center"/>
-                 <span className="w-1/5 text-center">-</span>
-                <input type="number" value={scoreB} onChange={e => setScoreB(parseInt(e.target.value) || 0)} className="w-2/5 bg-base-100 text-white p-2 rounded-md text-center"/>
-             </div>
-             {error && <p className="text-error text-center mt-2 text-sm">{error}</p>}
-             <div className="text-right mt-3">
-                 <button onClick={handleSave} className="bg-primary text-white font-semibold px-3 py-1 rounded-md text-sm">Save Final Score</button>
-             </div>
-        </div>
-    );
-};
-
-
-interface TournamentHistoryProps {
-    tournaments: Tournament[];
-    onViewTournament: (tournamentId: string) => void;
-}
-const TournamentHistory: React.FC<TournamentHistoryProps> = ({ tournaments, onViewTournament }) => {
-    const completedTournaments = tournaments.filter(t => t.status === 'COMPLETED');
-    return (
-        <div className="p-4 md:p-6">
-            <h2 className="text-3xl font-bold text-white mb-6 flex items-center"><HistoryIcon className="w-8 h-8 mr-3 text-primary"/> Tournament History</h2>
-            <div className="bg-base-200 p-4 rounded-lg">
-                {completedTournaments.length === 0 ? (
-                    <p className="text-gray-400 text-center py-4">No completed tournaments yet.</p>
-                ) : (
-                    <div className="space-y-3">
-                        {completedTournaments.map(t => (
-                            <div key={t.id} className="bg-base-300 p-4 rounded-md flex justify-between items-center">
-                                <div>
-                                    <h3 className="font-semibold text-lg">{t.name}</h3>
-                                    <p className="text-sm text-gray-400">Completed on: {new Date(t.createdAt).toLocaleDateString()}</p>
-                                </div>
-                                <button onClick={() => onViewTournament(t.id)} className="bg-accent text-white font-semibold px-4 py-2 rounded-md text-sm">View Details</button>
-                            </div>
-                        ))}
-                    </div>
-                )}
-            </div>
-        </div>
-    );
-}
-
-// --- Club Application Component ---
-interface ClubApplicationProps {
+interface ClubDashboardProps {
     club: Club;
     players: Player[];
     tournaments: Tournament[];
     onAddPlayer: (name: string, clubId: string) => void;
-    onAddTournament: (tournament: Omit<Tournament, 'id'>) => Promise<string>;
-    onUpdateTournament: (id: string, updatedTournamentData: Omit<Tournament, 'id'>) => void;
+    onTournamentCreate: (tournament: Omit<Tournament, 'id'>) => void;
+    onSelectTournament: (id: string) => void;
     onLogout: () => void;
 }
-const ClubApplication: React.FC<ClubApplicationProps> = ({ club, players, tournaments, onAddPlayer, onAddTournament, onUpdateTournament, onLogout }) => {
-    const [view, setView] = useState<'dashboard' | 'players' | 'new_tournament' | 'history'>('dashboard');
-    const [activeTournamentId, setActiveTournamentId] = useState<string | null>(null);
 
-    const clubPlayers = useMemo(() => players.filter(p => p.clubId === club.id), [players, club.id]);
-    const clubTournaments = useMemo(() => tournaments.filter(t => t.clubId === club.id), [tournaments, club.id]);
-    
-    useEffect(() => {
-        setActiveTournamentId(null);
-        setView('dashboard');
-    }, [club.id]);
+const ClubDashboard: React.FC<ClubDashboardProps> = ({ club, players, tournaments, onAddPlayer, onTournamentCreate, onSelectTournament, onLogout }) => {
+    const [activeView, setActiveView] = useState<'tournaments' | 'players' | 'new'>('tournaments');
 
-    const handleTournamentCreate = async (tournament: Omit<Tournament, 'id'>) => {
-        const newId = await onAddTournament(tournament);
-        setActiveTournamentId(newId);
-    };
-
-    const activeTournament = clubTournaments.find(t => t.id === activeTournamentId);
-    
-    const renderContent = () => {
-        if (activeTournament) {
-            return <TournamentView tournament={activeTournament} onUpdateTournament={onUpdateTournament}/>
-        }
-        
-        switch (view) {
-            case 'players':
-                return <PlayerManagement clubId={club.id} players={clubPlayers} onAddPlayer={onAddPlayer}/>;
-            case 'new_tournament':
-                return <TournamentWizard clubId={club.id} players={clubPlayers} onTournamentCreate={handleTournamentCreate}/>;
-            case 'history':
-                return <TournamentHistory tournaments={clubTournaments} onViewTournament={setActiveTournamentId} />
-            case 'dashboard':
-            default:
-                const inProgressTournaments = clubTournaments.filter(t => t.status !== 'COMPLETED');
-                return (
-                    <div className="p-4 md:p-6">
-                        <h2 className="text-3xl font-bold text-white mb-6">Dashboard</h2>
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                            <button onClick={() => setView('new_tournament')} className="bg-base-200 p-6 rounded-lg text-center hover:bg-base-300 transition-colors">
-                                <PlusIcon className="w-12 h-12 mx-auto text-primary mb-3"/>
-                                <h3 className="text-xl font-semibold">New Tournament</h3>
-                            </button>
-                             <button onClick={() => setView('players')} className="bg-base-200 p-6 rounded-lg text-center hover:bg-base-300 transition-colors">
-                                <UsersIcon className="w-12 h-12 mx-auto text-primary mb-3"/>
-                                <h3 className="text-xl font-semibold">Manage Players</h3>
-                            </button>
-                             <button onClick={() => setView('history')} className="bg-base-200 p-6 rounded-lg text-center hover:bg-base-300 transition-colors">
-                                <HistoryIcon className="w-12 h-12 mx-auto text-primary mb-3"/>
-                                <h3 className="text-xl font-semibold">Tournament History</h3>
-                            </button>
-                        </div>
-
-                        <div className="mt-8 bg-base-200 p-4 rounded-lg">
-                            <h3 className="text-2xl font-bold mb-4">Active Tournaments</h3>
-                            {inProgressTournaments.length === 0 ? (
-                                <p className="text-gray-400">No active tournaments. Create one to get started!</p>
-                            ) : (
-                                <div className="space-y-3">
-                                {inProgressTournaments.map(t => (
-                                    <div key={t.id} className="bg-base-300 p-4 rounded-md flex justify-between items-center">
-                                        <h4 className="font-semibold">{t.name}</h4>
-                                        <button onClick={() => setActiveTournamentId(t.id)} className="bg-primary text-white font-semibold px-4 py-2 rounded-md text-sm">View</button>
-                                    </div>
-                                ))}
+    const TournamentList: React.FC = () => (
+         <div className="p-4 md:p-6">
+            <h2 className="text-3xl font-bold text-white mb-6 flex items-center"><HistoryIcon className="w-8 h-8 mr-3 text-primary"/> Tournament History</h2>
+            <div className="bg-base-200 p-4 rounded-lg">
+                {tournaments.length > 0 ? (
+                    <ul className="space-y-3">
+                        {tournaments.map(t => (
+                            <li key={t.id} onClick={() => onSelectTournament(t.id)} className="bg-base-300 p-4 rounded-md flex justify-between items-center cursor-pointer hover:bg-base-100 transition-colors">
+                                <div>
+                                    <p className="font-bold text-lg">{t.name}</p>
+                                    <p className="text-sm text-gray-400">Created: {new Date(t.createdAt).toLocaleDateString()}</p>
                                 </div>
-                            )}
-                        </div>
-                    </div>
-                );
-        }
-    }
+                                <span className={`px-3 py-1 text-xs font-semibold rounded-full ${t.status === 'COMPLETED' ? 'bg-success/20 text-success' : 'bg-info/20 text-info'}`}>
+                                    {t.status.replace('_', ' ')}
+                                </span>
+                            </li>
+                        ))}
+                    </ul>
+                ) : (
+                    <p className="text-gray-400 text-center py-4">No tournaments created yet. Why not start one?</p>
+                )}
+            </div>
+         </div>
+    );
+    
+    const views: {[key: string]: {component: React.ReactNode, icon: React.ReactNode, label: string}} = {
+        tournaments: { component: <TournamentList />, icon: <HistoryIcon className="w-5 h-5 mr-2"/>, label: "History"},
+        players: { component: <PlayerManagement players={players} onAddPlayer={onAddPlayer} clubId={club.id} />, icon: <UsersIcon className="w-5 h-5 mr-2"/>, label: "Players"},
+        new: { component: <TournamentWizard players={players} onTournamentCreate={(t) => { onTournamentCreate(t); setActiveView('tournaments'); }} clubId={club.id} />, icon: <PlusIcon className="w-5 h-5 mr-2"/>, label: "New Tournament"},
+    };
 
     return (
         <div className="min-h-screen bg-neutral">
-            <header className="bg-base-200 shadow-md p-4 flex justify-between items-center">
+             <header className="bg-base-200 shadow-md p-4 flex justify-between items-center">
                 <div className="flex items-center gap-4">
                     <BadmintonIcon className="w-8 h-8 text-primary"/>
-                    <h1 className="text-xl font-bold text-white hidden sm:block">{club.name}</h1>
+                    <h1 className="text-xl font-bold text-white truncate">{club.name}</h1>
                 </div>
                 <button onClick={onLogout} className="text-sm bg-secondary hover:bg-secondary-focus text-white font-semibold py-2 px-4 rounded-md transition-colors">
                     Logout
                 </button>
             </header>
+            <nav className="bg-base-200 border-t border-b border-base-300 flex justify-center">
+                {Object.entries(views).map(([key, {icon, label}]) => (
+                    <button key={key} onClick={() => setActiveView(key as any)} className={`flex-1 sm:flex-initial sm:px-6 py-3 flex items-center justify-center font-semibold transition-colors ${activeView === key ? 'text-primary border-b-2 border-primary bg-primary/10' : 'text-gray-400 hover:text-white'}`}>
+                        {icon} {label}
+                    </button>
+                ))}
+            </nav>
             <main>
-                {(view !== 'dashboard' || activeTournamentId) && (
-                    <div className="p-4 md:px-6">
-                        <button onClick={() => { setView('dashboard'); setActiveTournamentId(null); }} className="flex items-center gap-2 text-primary hover:underline">
-                            <ChevronLeftIcon className="w-5 h-5"/>
-                            Back to Dashboard
-                        </button>
-                    </div>
-                )}
-                {renderContent()}
+                {views[activeView].component}
             </main>
         </div>
     );
-}
+};
 
-// --- Main App Router ---
 
-export default function App() {
-    const [auth, setAuth] = useLocalStorage<AuthState>('badminton-auth', { type: 'none' });
+const App = () => {
+    const [auth, setAuth] = useLocalStorage<AuthState>('badmintour-auth', { type: 'none' });
     const [clubs, setClubs] = useState<Club[]>([]);
-    const [players, setPlayers] = useState<Player[]>([]);
     const [tournaments, setTournaments] = useState<Tournament[]>([]);
-    const [adminViewingTournamentId, setAdminViewingTournamentId] = useState<string | null>(null);
-    
+    const [players, setPlayers] = useState<Player[]>([]);
+    const [selectedTournamentId, setSelectedTournamentId] = useState<string | null>(null);
+    const [loading, setLoading] = useState(true);
+    const [viewingTournamentAsAdmin, setViewingTournamentAsAdmin] = useState<string | null>(null);
+
     useEffect(() => {
-        const transformSnapshot = (snapshot: any) => {
+        setLoading(true);
+        const refs = {
+            clubs: db.ref('clubs'),
+            tournaments: db.ref('tournaments'),
+            players: db.ref('players'),
+        };
+
+        const processSnapshot = (snapshot: firebase.database.DataSnapshot) => {
             const data = snapshot.val();
             return data ? Object.keys(data).map(key => ({ ...data[key], id: key })) : [];
         };
+        
+        const initialLoads = { clubs: false, tournaments: false, players: false };
+        const checkInitialLoadComplete = () => {
+            if (initialLoads.clubs && initialLoads.tournaments && initialLoads.players) {
+                setLoading(false);
+            }
+        };
 
-        // FIX: Use v8 API for database references.
-        const clubsRef = db.ref('clubs');
-        const playersRef = db.ref('players');
-        const tournamentsRef = db.ref('tournaments');
-
-        // FIX: Use v8 API `on()` method for listening to value changes and implement cleanup with `off()`.
-        const clubsCallback = (snapshot: any) => setClubs(transformSnapshot(snapshot));
-        const playersCallback = (snapshot: any) => setPlayers(transformSnapshot(snapshot));
-        const tournamentsCallback = (snapshot: any) => setTournaments(transformSnapshot(snapshot).sort((a: Tournament, b: Tournament) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
-
-        clubsRef.on('value', clubsCallback);
-        playersRef.on('value', playersCallback);
-        tournamentsRef.on('value', tournamentsCallback);
+        const onClubsValue = (snapshot: firebase.database.DataSnapshot) => {
+            setClubs(processSnapshot(snapshot));
+            if (!initialLoads.clubs) {
+                initialLoads.clubs = true;
+                checkInitialLoadComplete();
+            }
+        };
+        const onTournamentsValue = (snapshot: firebase.database.DataSnapshot) => {
+            setTournaments(processSnapshot(snapshot));
+            if (!initialLoads.tournaments) {
+                initialLoads.tournaments = true;
+                checkInitialLoadComplete();
+            }
+        };
+        const onPlayersValue = (snapshot: firebase.database.DataSnapshot) => {
+            setPlayers(processSnapshot(snapshot));
+            if (!initialLoads.players) {
+                initialLoads.players = true;
+                checkInitialLoadComplete();
+            }
+        };
+        
+        refs.clubs.on('value', onClubsValue, (error) => { console.error('Firebase clubs read failed:', error); });
+        refs.tournaments.on('value', onTournamentsValue, (error) => { console.error('Firebase tournaments read failed:', error); });
+        refs.players.on('value', onPlayersValue, (error) => { console.error('Firebase players read failed:', error); });
 
         return () => {
-            clubsRef.off('value', clubsCallback);
-            playersRef.off('value', playersCallback);
-            tournamentsRef.off('value', tournamentsCallback);
+            refs.clubs.off('value', onClubsValue);
+            refs.tournaments.off('value', onTournamentsValue);
+            refs.players.off('value', onPlayersValue);
         };
     }, []);
 
-    const handleLogout = () => {
-        setAuth({ type: 'none' });
-        setAdminViewingTournamentId(null);
-    };
+    const handleAddPlayer = useCallback((name: string, clubId: string) => {
+        db.ref('players').push({ name, clubId });
+    }, []);
 
-    // FIX: All data modification functions have been updated to use the Firebase v8 namespaced API.
-    // --- Data Modification Functions ---
-    const handleAddClub = (name: string, password: string) => db.ref('clubs').push({ name, password, active: true });
+    const handleTournamentCreate = useCallback((tournamentData: Omit<Tournament, 'id'>) => {
+        const newTournamentRef = db.ref('tournaments').push(tournamentData);
+        if (newTournamentRef.key) {
+            setSelectedTournamentId(newTournamentRef.key);
+        }
+    }, []);
+
+    const handleUpdateTournament = useCallback((id: string, updatedTournamentData: Partial<Omit<Tournament, 'id'>>) => {
+        const currentTournament = tournaments.find(t => t.id === id);
+        if (currentTournament) {
+            const finalData = { ...currentTournament, ...updatedTournamentData };
+            delete (finalData as any).id;
+            db.ref('tournaments').child(id).set(finalData);
+        }
+    }, [tournaments]);
     
-    const handleUpdateClub = (clubId: string, data: { name: string; password: string }) => {
-        if (clubs.some(c => c.name.toLowerCase() === data.name.toLowerCase() && c.id !== clubId)) {
-            return false; // Name already exists
-        }
-        const clubToUpdate = clubs.find(c => c.id === clubId);
-        if (clubToUpdate) {
-            db.ref(`clubs/${clubId}`).set({ ...clubToUpdate, name: data.name, password: data.password });
-        }
-        return true;
-    };
+    const handleAddClub = useCallback((name: string, password: string) => {
+        db.ref('clubs').push({ name, password, active: true });
+    }, []);
 
-    const handleToggleActive = (clubId: string) => {
+    const handleUpdateClub = useCallback((clubId: string, data: { name: string, password: string }) => {
+        if (clubs.some(c => c.id !== clubId && c.name.toLowerCase() === data.name.toLowerCase())) {
+            return false;
+        }
+        db.ref('clubs').child(clubId).update(data);
+        return true;
+    }, [clubs]);
+
+    const handleToggleActive = useCallback((clubId: string) => {
         const club = clubs.find(c => c.id === clubId);
-        if(club) {
+        if (club) {
             db.ref(`clubs/${clubId}/active`).set(!club.active);
         }
-    };
-    
-    const handleDeleteTournament = (tournamentId: string) => db.ref(`tournaments/${tournamentId}`).remove();
+    }, [clubs]);
 
-    const handleAddPlayer = (name: string, clubId: string) => db.ref('players').push({ name, clubId });
-
-    const handleAddTournament = async (tournamentData: Omit<Tournament, 'id'>) => {
-        const newTournamentRef = await db.ref('tournaments').push(tournamentData);
-        return newTournamentRef.key!;
-    };
+    const handleDeleteTournament = useCallback((tournamentId: string) => {
+        db.ref('tournaments').child(tournamentId).remove();
+    }, []);
     
-    const handleUpdateTournament = (id: string, updatedTournamentData: Omit<Tournament, 'id'>) => {
-        db.ref(`tournaments/${id}`).set(updatedTournamentData);
-    };
-    
-    switch (auth.type) {
-        case 'admin':
-            const adminViewingTournament = adminViewingTournamentId ? tournaments.find(t => t.id === adminViewingTournamentId) : null;
-            if (adminViewingTournament) {
-                return (
-                    <div className="min-h-screen bg-neutral">
-                         <header className="bg-base-200 shadow-md p-4">
-                            <div className="flex items-center gap-4">
-                                <ShieldIcon className="w-8 h-8 text-accent"/>
-                                <h1 className="text-xl font-bold text-white">Admin View: Tournament Details</h1>
-                            </div>
-                        </header>
-                        <main>
-                             <div className="p-4 md:px-6">
-                                <button onClick={() => setAdminViewingTournamentId(null)} className="flex items-center gap-2 text-primary hover:underline">
-                                    <ChevronLeftIcon className="w-5 h-5"/>
-                                    Back to Admin Dashboard
-                                </button>
-                            </div>
-                            <TournamentView 
-                                tournament={adminViewingTournament} 
-                                onUpdateTournament={() => {}} // Admin view is read-only
-                                readOnly={true} 
-                            />
-                        </main>
-                    </div>
-                );
-            }
-            return <AdminDashboard 
-                clubs={clubs} 
-                tournaments={tournaments} 
-                onAddClub={handleAddClub}
-                onUpdateClub={handleUpdateClub}
-                onToggleActive={handleToggleActive}
-                onDeleteTournament={handleDeleteTournament}
-                onLogout={handleLogout} 
-                onViewTournament={setAdminViewingTournamentId}
-            />;
-        case 'club':
-            const currentClub = auth.clubId ? clubs.find(c => c.id === auth.clubId) : null;
-            
-            // Auto-logout if club is deleted or deactivated
-            if (!currentClub || !currentClub.active) {
-                if (auth.clubId) { // only logout if there was a clubId
-                    handleLogout(); 
-                }
-                return <LoginScreen setAuth={setAuth} clubs={clubs} />;
-            }
+    const handleLogout = useCallback(() => {
+        setAuth({ type: 'none' });
+        setSelectedTournamentId(null);
+        setViewingTournamentAsAdmin(null);
+    }, [setAuth]);
 
-            return <ClubApplication
-                club={currentClub}
-                players={players}
-                tournaments={tournaments}
-                onAddPlayer={handleAddPlayer}
-                onAddTournament={handleAddTournament}
-                onUpdateTournament={handleUpdateTournament}
-                onLogout={handleLogout}
-            />;
-        case 'none':
-        default:
-            return <LoginScreen setAuth={setAuth} clubs={clubs} />;
+    const clubPlayers = useMemo(() => auth.type === 'club' ? players.filter(p => p.clubId === auth.clubId) : [], [players, auth]);
+    const clubTournaments = useMemo(() => auth.type === 'club' ? tournaments.filter(t => t.clubId === auth.clubId) : [], [tournaments, auth]);
+    
+    if (loading) {
+        return <div className="min-h-screen flex items-center justify-center bg-neutral text-white">Loading application...</div>;
     }
+
+    if (auth.type === 'none') {
+        return <LoginScreen setAuth={setAuth} clubs={clubs} />;
+    }
+
+    if (auth.type === 'admin') {
+        const tournamentToView = tournaments.find(t => t.id === viewingTournamentAsAdmin);
+        if (tournamentToView) {
+            return (
+                <div className="bg-neutral min-h-screen">
+                    <header className="bg-base-200 p-2">
+                        <button onClick={() => setViewingTournamentAsAdmin(null)} className="flex items-center text-sm bg-secondary hover:bg-secondary-focus text-white font-semibold py-2 px-4 rounded-md transition-colors">
+                            <ChevronLeftIcon className="w-5 h-5 mr-1" /> Back to Dashboard
+                        </button>
+                    </header>
+                    <TournamentView tournament={tournamentToView} onUpdateTournament={() => {}} readOnly />
+                </div>
+            );
+        }
+        return <AdminDashboard onLogout={handleLogout} clubs={clubs} tournaments={tournaments} onAddClub={handleAddClub} onUpdateClub={handleUpdateClub} onToggleActive={handleToggleActive} onDeleteTournament={handleDeleteTournament} onViewTournament={setViewingTournamentAsAdmin} />;
+    }
+
+    if (auth.type === 'club') {
+        const club = clubs.find(c => c.id === auth.clubId);
+        const selectedTournament = tournaments.find(t => t.id === selectedTournamentId);
+        
+        if (selectedTournament) {
+            return (
+                <div className="bg-neutral min-h-screen">
+                     <header className="bg-base-200 p-2">
+                        <button onClick={() => setSelectedTournamentId(null)} className="flex items-center text-sm bg-secondary hover:bg-secondary-focus text-white font-semibold py-2 px-4 rounded-md transition-colors">
+                            <ChevronLeftIcon className="w-5 h-5 mr-1" /> Back to Dashboard
+                        </button>
+                    </header>
+                    <TournamentView tournament={selectedTournament} onUpdateTournament={handleUpdateTournament} />
+                </div>
+            );
+        }
+
+        if (!club) {
+             return <div className="min-h-screen flex items-center justify-center bg-neutral text-error">Error: Your club could not be found. Please log out and try again. <button onClick={handleLogout} className="ml-4 underline">Logout</button></div>;
+        }
+
+        return <ClubDashboard club={club} players={clubPlayers} tournaments={clubTournaments} onAddPlayer={handleAddPlayer} onTournamentCreate={handleTournamentCreate} onSelectTournament={setSelectedTournamentId} onLogout={handleLogout} />;
+    }
+
+    return null;
 }
+
+export default App;
