@@ -1,6 +1,7 @@
 
 
 
+
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { useLocalStorage } from './hooks/useLocalStorage';
 import type { Player, Tournament, Team, Match, LeaderboardStat, Club } from './types';
@@ -108,6 +109,25 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ setAuth, clubs }) => {
     const [adminPass, setAdminPass] = useState('');
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
+    const [isAdminInitialized, setIsAdminInitialized] = useState(true);
+    const [isCheckingAdmin, setIsCheckingAdmin] = useState(true);
+
+    useEffect(() => {
+        const checkAdminStatus = async () => {
+            setIsCheckingAdmin(true);
+            try {
+                const adminRef = db.ref('admin/credentials');
+                const snapshot = await adminRef.get();
+                setIsAdminInitialized(snapshot.exists());
+            } catch (e) {
+                console.error("Failed to check admin status:", e);
+                setIsAdminInitialized(true); // Fail safely to normal login
+            } finally {
+                setIsCheckingAdmin(false);
+            }
+        };
+        checkAdminStatus();
+    }, []);
 
     const handleClubLogin = (e: React.FormEvent) => {
         e.preventDefault();
@@ -155,6 +175,12 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ setAuth, clubs }) => {
             setLoading(false);
         }
     };
+    
+    const getAdminButtonText = () => {
+        if (loading) return 'Processing...';
+        if (isCheckingAdmin) return 'Checking Status...';
+        return isAdminInitialized ? 'Admin Login' : 'Create Admin Account';
+    };
 
     return (
         <div className="min-h-screen bg-neutral flex flex-col items-center justify-center p-4">
@@ -174,10 +200,15 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ setAuth, clubs }) => {
                         </form>
                     ) : (
                         <form onSubmit={handleAdminLogin}>
+                            {!isCheckingAdmin && !isAdminInitialized && (
+                                <div className="text-info text-center mb-4 text-sm bg-sky-500/10 p-3 rounded-md border border-sky-500/30">
+                                    <p>No admin account exists. Enter a username and password below to create one.</p>
+                                </div>
+                            )}
                             <input type="text" value={adminUser} onChange={e => setAdminUser(e.target.value)} placeholder="Username" className="w-full bg-base-200 text-white p-3 rounded-md border-2 border-base-300 focus:border-primary focus:outline-none transition mb-4" />
                             <input type="password" value={adminPass} onChange={e => setAdminPass(e.target.value)} placeholder="Password" className="w-full bg-base-200 text-white p-3 rounded-md border-2 border-base-300 focus:border-primary focus:outline-none transition mb-4" />
-                            <button type="submit" disabled={loading} className="w-full bg-accent text-white font-bold py-3 px-4 rounded-md hover:bg-blue-600 transition-colors disabled:bg-gray-500">
-                                {loading ? 'Logging in...' : 'Admin Login'}
+                            <button type="submit" disabled={loading || isCheckingAdmin} className="w-full bg-accent text-white font-bold py-3 px-4 rounded-md hover:bg-blue-600 transition-colors disabled:bg-gray-500">
+                                {getAdminButtonText()}
                             </button>
                         </form>
                     )}
